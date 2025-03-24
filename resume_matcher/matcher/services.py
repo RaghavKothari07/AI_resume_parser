@@ -1,129 +1,75 @@
 from llama_cpp import Llama
+import json
 import os
-import fitz  # PyMuPDF for PDF parsing
+from .models import CandidateProfile, JobPosting, MatchResult
 
-# Load Llama Model
 LLAMA_API_KEY = os.getenv("LLAMA_API_KEY")
 llm = Llama(model_path="path/to/llama-3-model.gguf")
 
-def extract_text_from_pdf(pdf_path):
-    """Extract text from a PDF file."""
-    text = ""
+def parse_resume(text):
+    """Extract structured resume data and store in DB."""
+    prompt = f"Extract structured resume data in JSON format:\n\n{text}"
+    response = llm(prompt)
+
     try:
-        with fitz.open(pdf_path) as doc:
-            for page in doc:
-                text += page.get_text()
-    except Exception as e:
-        return f"Error reading PDF: {str(e)}"
-    return text
-
-def parse_resume(pdf_path):
-    """Extract structured resume data from a PDF using Llama function calling."""
-    text = extract_text_from_pdf(pdf_path)
-
-    # Define function schema
-    functions = [
-        {
-            "name": "parse_resume",
-            "description": "Extract structured resume data from plain text.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "skills": {"type": "array", "items": {"type": "string"}},
-                    "education": {"type": "array", "items": {"type": "string"}},
-                    "work_experience": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["name", "skills", "education", "work_experience"]
-            }
-        }
-    ]
-
-    response = llm.create_chat_completion(
-        messages=[{"role": "user", "content": text}],
-        functions=functions,
-        function_call="parse_resume"
-    )
-
-    return response["choices"][0]["message"]["function_call"]["arguments"]
+        structured_data = json.loads(response['choices'][0]['text'].strip())
+        candidate = CandidateProfile.objects.create(
+            name=structured_data['name'],
+            skills=structured_data['skills'],
+            education=structured_data['education'],
+            work_experience=structured_data['work_experience']
+        )
+        return structured_data
+    except (json.JSONDecodeError, KeyError) as e:
+        return {"error": f"Failed to parse response: {str(e)}"}
 
 def parse_job_posting(text):
-    """Extract structured job posting data from plain text."""
-    functions = [
-        {
-            "name": "parse_job_posting",
-            "description": "Extract job posting details.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "company": {"type": "string"},
-                    "required_skills": {"type": "array", "items": {"type": "string"}},
-                    "description": {"type": "string"}
-                },
-                "required": ["title", "company", "required_skills", "description"]
-            }
-        }
-    ]
+    """Extract structured job posting data and store in DB."""
+    prompt = f"Extract structured job posting data in JSON format:\n\n{text}"
+    response = llm(prompt)
 
-    response = llm.create_chat_completion(
-        messages=[{"role": "user", "content": text}],
-        functions=functions,
-        function_call="parse_job_posting"
-    )
+    try:
+        structured_data = json.loads(response['choices'][0]['text'].strip())
+        job = JobPosting.objects.create(
+            title=structured_data['title'],
+            company=structured_data['company'],
+            required_skills=structured_data['required_skills'],
+            description=structured_data['description']
+        )
+        return structured_data
+    except (json.JSONDecodeError, KeyError) as e:
+        return {"error": f"Failed to parse response: {str(e)}"}
 
-    return response["choices"][0]["message"]["function_call"]["arguments"]
+def match_candidate_to_job(candidate_id, job_id):
+    """Match a candidate to a job and store results in DB."""
+    candidate = CandidateProfile.objects.get(id=candidate_id)
+    job = JobPosting.objects.get(id=job_id)
 
-def match_candidate_to_job(candidate, job):
-    """Match a candidate to a job posting and return a match score."""
-    functions = [
-        {
-            "name": "match_candidate_to_job",
-            "description": "Compute a match score between a candidate and a job.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "match_score": {"type": "integer"},
-                    "missing_skills": {"type": "array", "items": {"type": "string"}},
-                    "summary": {"type": "string"}
-                },
-                "required": ["match_score", "missing_skills", "summary"]
-            }
-        }
-    ]
+    prompt = f"Match the candidate with the job and return JSON with match_score, missing_skills, and summary:\n\nCandidate: {candidate}\n\nJob: {job}"
+    response = llm(prompt)
 
-    prompt = f"Candidate Profile: {candidate}\nJob Posting: {job}"
+    try:
+        match_data = json.loads(response['choices'][0]['text'].strip())
+        match = MatchResult.objects.create(
+            candidate=candidate,
+            job=job,
+            match_score=match_data["match_score"],
+            missing_skills=match_data["missing_skills"],
+            summary=match_data["summary"]
+        )
+        return match_data
+    except (json.JSONDecodeError, KeyError) as e:
+        return {"error": f"Failed to parse response: {str(e)}"}
 
-    response = llm.create_chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        functions=functions,
-        function_call="match_candidate_to_job"
-    )
+def generate_cover_letter(candidate_id, job_id):
+    """Generate a cover letter for a given candidate and job."""
+    candidate = CandidateProfile.objects.get(id=candidate_id)
+    job = JobPosting.objects.get(id=job_id)
 
-    return response["choices"][0]["message"]["function_call"]["arguments"]
+    prompt = f"Generate a JSON response with a 'cover_letter' field for {candidate.name} applying to {job.title} at {job.company}."
+    response = llm(prompt)
 
-def generate_cover_letter(candidate, job):
-    """Generate a cover letter using structured function calling."""
-    functions = [
-        {
-            "name": "generate_cover_letter",
-            "description": "Generate a tailored cover letter for a candidate applying to a job.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cover_letter": {"type": "string"}
-                },
-                "required": ["cover_letter"]
-            }
-        }
-    ]
-
-    prompt = f"Generate a cover letter for {candidate['name']} applying for {job['title']} at {job['company']}."
-
-    response = llm.create_chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        functions=functions,
-        function_call="generate_cover_letter"
-    )
-
-    return response["choices"][0]["message"]["function_call"]["arguments"]["cover_letter"]
+    try:
+        return json.loads(response['choices'][0]['text'].strip()).get("cover_letter", "Error generating cover letter.")
+    except (json.JSONDecodeError, KeyError) as e:
+        return {"error": f"Failed to parse response: {str(e)}"}
