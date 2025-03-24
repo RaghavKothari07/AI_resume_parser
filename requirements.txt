@@ -1,0 +1,8 @@
+django
+djangorestframework
+streamlit
+pdfplumber
+python-docx
+llama-cpp-python
+requests
+psycopg2
